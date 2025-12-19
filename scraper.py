@@ -1,49 +1,64 @@
+import streamlit as st
 import pandas as pd
-import datetime
-import os
-import random
+import altair as alt
 
-# 保存するファイル名
-DATA_FILE = "interest_rate_history.csv"
+# ==========================================
+# 👇 ここにさっきコピーしたURLを貼り付ける
+# （" " の引用符は消さないで、その中に入れてください）
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS8hJRst-sZ2V_rzHW77OK5NBbDGRwJ8O7bYNoofq2l7gtqE8ZzPSUq39xPI4IDp4-q1NXdapzo-hZE/pub?output=csv"
+# ==========================================
 
-def fetch_rates():
-    # 本来はここで requests と BeautifulSoup で銀行サイトを見に行きます
-    # まずは仕組みが動くか確認するため、昨日の数字に少し変化を加えるダミーにします
-    
-    today = datetime.date.today()
-    
-    # テスト用ダミーデータ（本番ではここをスクレイピングコードに書き換えます）
-    return {
-        "Date": today,
-        "BOJ (Policy)": 0.50,
-        "MUFG (Variable)": 2.475,
-        "Yokohama (Variable)": 2.675 + random.choice([0, 0.01, -0.01]), # 微妙に変動させる
-        "Johoku (Prime)": 1.675
-    }
+st.set_page_config(page_title="My金利ウォッチ", page_icon="🏦")
 
-def main():
-    print("データ収集を開始します...")
-    new_data = fetch_rates()
-    
-    # 既存データの読み込みまたは新規作成
-    if os.path.exists(DATA_FILE):
-        df = pd.read_csv(DATA_FILE)
-    else:
-        df = pd.DataFrame(columns=new_data.keys())
-    
-    # 日付の重複チェック（念のため文字列で比較）
-    df['Date'] = df['Date'].astype(str)
-    today_str = str(new_data["Date"])
-    
-    if today_str in df['Date'].values:
-        print(f"{today_str} のデータは既にあります。スキップします。")
-    else:
-        # 新しいデータを追加
-        new_row = pd.DataFrame([new_data])
-        # concatを使って結合
-        df = pd.concat([df, new_row], ignore_index=True)
-        df.to_csv(DATA_FILE, index=False)
-        print(f"データを追加保存しました: {new_data}")
+st.title("🏦 My金利ウォッチ")
+st.caption(f"データソース: Googleスプレッドシート (自動更新)")
 
-if __name__ == "__main__":
-    main()
+# データの読み込み
+@st.cache_data(ttl=3600) # 1時間キャッシュして表示を高速化
+def load_data():
+    try:
+        df = pd.read_csv(CSV_URL)
+        df['Date'] = pd.to_datetime(df['Date'])
+        return df
+    except Exception as e:
+        return None
+
+df = load_data()
+
+if df is None:
+    st.error("データの読み込みに失敗しました。URLが正しいか確認してください。")
+    st.info("ヒント: スプレッドシートの「ウェブに公開」で「CSV」形式を選びましたか？")
+else:
+    # 最新データの表示
+    latest = df.iloc[-1]
+    
+    # 見やすく3列で表示
+    col1, col2, col3 = st.columns(3)
+    col1.metric("日銀政策金利", f"{latest['BOJ']}%")
+    col2.metric("三菱UFJ (変動)", f"{latest['MUFG']}%", delta_color="inverse")
+    col3.metric("横浜銀行", f"{latest['Yokohama']}%", delta_color="inverse")
+
+    # チャートの描画
+    st.subheader("📈 金利推移チャート")
+    
+    # データをチャート用に変形（ピボット解除）
+    chart_data = df.melt('Date', var_name='Bank', value_name='Rate')
+    
+    # インタラクティブなチャートを作成
+    chart = alt.Chart(chart_data).mark_line(point=True).encode(
+        x='Date:T',
+        y=alt.Y('Rate:Q', scale=alt.Scale(domain=[0, 3.0])), # 縦軸の範囲（0%〜3%）
+        color='Bank:N',
+        tooltip=['Date', 'Bank', 'Rate']
+    ).interactive()
+    
+    st.altair_chart(chart, use_container_width=True)
+
+    # 生データの確認
+    with st.expander("詳細データを見る"):
+        st.dataframe(df.sort_values('Date', ascending=False))
+        
+    # 手動更新ボタン
+    if st.button("最新データを再読み込み"):
+        st.cache_data.clear()
+        st.rerun()
